@@ -41,6 +41,11 @@ public class Layout {
     private static final int NUM_COLUMNS = 7;
 
     /**
+     * How many cards should we flip over if we're going through the draw stack?
+     */
+    private static final int NUM_CARDS_TO_TURN = 3;
+
+    /**
      * The string to display for a card that's face down.
      */
     private static final String FACE_DOWN = "**";
@@ -105,7 +110,7 @@ public class Layout {
 
         // Set up empty discard piles and fresh draw stack.
         discardPiles = new HashMap<>();
-        topDrawStackIndex = 0;
+        topDrawStackIndex = NUM_CARDS_TO_TURN - 1;
     }
 
     /**
@@ -115,32 +120,148 @@ public class Layout {
      *   @param move The move to make.
      *   @return true if the move is allowable and was executed, false otherwise.
      */
-    public boolean processMove(final String move) throws InvalidGameStateException {
+    public boolean processMove(final String move) throws InvalidGameStateException, InvalidFaceValueException, InvalidSuitException {
         if (!isAllowedMove(move)) {
             return false;
         }
 
         if (move.equals(NEW_GAME)) {
             initialise();
+            return true;
         }
 
         if (move.equals(TURN)) {
-            // TODO: move the state of the draw stack.
-
+            turnDrawStack();
+            return true;
         }
 
         // If we're here, it's a move card to column move.
-        // TODO: find the relevant card in the relevant column.  Then move that slice of the
-        // list to the other list.  Be careful, the discard piles are just single cards, not
-        // lists!
+        Card card = new Card(move.substring(0, 2));
+        String column = move.substring(3);
+        return moveColumn(card, column);
+    }
 
-        return true;
+
+    /**
+     * Move the given card into the given column or discard stack.
+     *   @return true if the state of the board has changed, false otherwise
+     */
+    private boolean moveColumn(final Card card, final String where) {
+
+        // Figure out if the destination is a numbered column or a discard pile.
+        boolean goingToDiscardPile = false;
+        int column = 0;
+        String suit = "";
+        try {
+            column = Integer.parseInt(where);
+        }
+        catch (NumberFormatException e) {
+            suit = where;
+            goingToDiscardPile = true;
+        }
+
+        // If the card is the top card in the draw stack, remove it from the draw
+        // stack and put it in the destination.
+        Card topDrawStack = drawStack.get(topDrawStackIndex);
+        if (topDrawStack.equals(card)) {
+            card.setFaceUp(true);
+            drawStack.remove(card);
+
+            // Reveal the previous card in the draw stack.  If there is no
+            // previous card to reveal, do a turn-cards move automatically.
+            topDrawStackIndex -= 1;
+            if (topDrawStackIndex < 0) {
+                turnDrawStack();
+            }
+
+            if (goingToDiscardPile) {
+                discardPiles.put(suit, card);
+            }
+            else {
+                columns.get(column - 1).add(card);
+            }
+
+            return true;
+        }
+
+        // The card isn't the top card in the draw stack, so it must be in
+        // one of the numbered columns.
+        for (List<Card> columnToSearch : columns) {
+            for (Card cardToCompare : columnToSearch) {
+                if (cardToCompare.isFaceUp() && cardToCompare.equals(card)) {
+
+                    // Found it, now move it and everything below it.
+                    int lastCardIndex = columnToSearch.size() - 1;
+                    int indexFoundAt = columnToSearch.indexOf(cardToCompare);
+
+                    if (goingToDiscardPile) {
+                        // It doesn't make sense to move multiple cards from a column into the
+                        // same discard pile, so don't do it.
+                        if (lastCardIndex > indexFoundAt) {
+                            return false;
+                        }
+                        else {
+                            columnToSearch.remove(cardToCompare);
+                            discardPiles.put(suit, cardToCompare);
+                            return true;
+                        }
+                    }
+
+                    for (int i = indexFoundAt; i <= lastCardIndex; i++) {
+                        columns.get(column - 1).add(columnToSearch.get(indexFoundAt));
+                        columnToSearch.remove(indexFoundAt);
+                    }
+
+                    // If there are any cards left in the source column, flip the last one face up.
+                    int newColumnSize = columnToSearch.size();
+                    if (newColumnSize > 0) {
+                        columnToSearch.get(newColumnSize - 1).setFaceUp(true);
+                    }
+                    return true;
+                }
+            }
+        }
+
+        // If we're here, we haven't found the card we're supposed to move.
+        return false;
+    }
+
+    /**
+     * Advance the pointer to the top card of the draw stack.  Start from the beginning
+     * if we're already at the end of the stack.
+     */
+    private void turnDrawStack() {
+
+        int size = drawStack.size();
+        int lastIndex = size - 1;
+
+        // Check that there's something in the draw stack to turn.
+        if (size == 0) {
+            return;
+        }
+
+        // If we're at the very end of the stack, go back to the beginning
+        // and proceed to turn over a batch of cards.  (The requirement around
+        // this is a bit vague.  I'm interpreting "refresh the Stack from the
+        // Waste pile" to mean go back to the beginning of the stack and then
+        // turn over cards.)
+        if (topDrawStackIndex == lastIndex) {
+            topDrawStackIndex = -1;
+        }
+
+        // Can we turn over a batch of cards without running off the end?
+        if (size > topDrawStackIndex + NUM_CARDS_TO_TURN) {
+            topDrawStackIndex += NUM_CARDS_TO_TURN;
+        }
+        else {
+            topDrawStackIndex = lastIndex;
+        }
     }
 
     /**
      * Check to see if the given move can be parsed by the game.  (This is
      * distinct from checking whether the move is valid given the state of
-     * the board.)  Allowed moves are "Q", "N", "T", and a valid card followed
+     * the board.)  Allowed moves are "N", "T", and a valid card followed
      * by a valid column.
      *   @param move The move to check.
      *   @return true if the move is valid, false otherwise.
@@ -199,6 +320,7 @@ public class Layout {
 
     /**
      * Output the game's current state.
+     *  @return a list of Strings that can be printed by the caller to show the board.
      */
     public List<String> print() {
         String header = "ColumnNames   S[T]ack        ";
@@ -227,7 +349,7 @@ public class Layout {
         for (char s : Suit.getValidInputs()) {
             firstRow += " ";
             if (discardPiles.containsKey(String.valueOf(s))) {
-                firstRow += discardPiles.get(String.valueOf(s));
+                firstRow += discardPiles.get(String.valueOf(s)).getValue();
             }
             else {
                 firstRow += BLANK_CARD;

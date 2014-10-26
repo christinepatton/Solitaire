@@ -8,6 +8,7 @@ import com.mergermarket.exception.InvalidSuitException;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.mockito.Mockito;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -107,28 +108,24 @@ public class LayoutTest {
     /** Test that processMove returns false if the given move is not allowed (not to be confused
      * with invalid due to the state of the game).
      */
-    public void testProcessMoveWithDisallowedInput() throws InvalidGameStateException {
-        assertEquals(false, layout.processMove(""));
-        assertEquals(false, layout.processMove("F"));
-        assertEquals(false, layout.processMove("SomeTooLongString"));
-        assertEquals(false, layout.processMove("c2 X"));
-        assertEquals(false, layout.processMove("X2 c"));
-        assertEquals(false, layout.processMove("c2 0"));
-        assertEquals(false, layout.processMove("c2 8"));
-        assertEquals(false, layout.processMove("c2 10"));
-
-        assertEquals(true, layout.processMove("c2 c"));
-        assertEquals(true, layout.processMove("c2 1"));
-        assertEquals(true, layout.processMove("c2 7"));
+    public void testProcessMoveWithDisallowedInput() throws InvalidGameStateException, InvalidFaceValueException, InvalidSuitException {
+        assertFalse(layout.processMove(""));
+        assertFalse(layout.processMove("F"));
+        assertFalse(layout.processMove("SomeTooLongString"));
+        assertFalse(layout.processMove("c2 X"));
+        assertFalse(layout.processMove("X2 c"));
+        assertFalse(layout.processMove("c2 0"));
+        assertFalse(layout.processMove("c2 8"));
+        assertFalse(layout.processMove("c2 10"));
     }
 
     @Test
     /** Test that starting a new game causes the cards to be re-shuffled.
      */
-    public void testStartingNewGame() throws InvalidGameStateException {
+    public void testStartingNewGame() throws InvalidGameStateException, InvalidFaceValueException, InvalidSuitException {
         List<String> firstState = layout.print();
 
-        assertEquals(true, layout.processMove("N"));
+        assertTrue(layout.processMove("N"));
 
         List<String> secondState = layout.print();
 
@@ -139,6 +136,138 @@ public class LayoutTest {
         }
 
         fail("Game state didn't change when new game started");
+    }
+
+    @Test
+    /** Test turning over cards with the draw stack in various states.
+     */
+    public void testTurningDrawStack() throws InvalidFaceValueException, InvalidSuitException, InvalidGameStateException {
+        Layout layout = createUnshuffledLayout();
+
+        // Test basic card turning, hitting the end of the draw stack, plus
+        // going back to the beginning when we hit the end.
+        String[] values = {"D6", "D9", "DQ", "H2", "H5", "H8", "HJ", "D3"};
+        for (String s : values) {
+            assertEquals(true, layout.processMove("T"));
+            List<String> state = layout.print();
+            assertEquals(s, getTopDrawStackCard(state));
+        }
+    }
+
+    @Test
+    /** Test moving cards in various ways:
+     *   - from draw stack to a column
+     *   - from draw stack to a discard pile
+     *   - from column to another column
+     *   - from column to discard pile
+     */
+    public void testMoveCard() throws InvalidFaceValueException, InvalidSuitException, InvalidGameStateException {
+        Layout layout = createUnshuffledLayout();
+
+        // NB: This test generates invalid moves, which is fine for now, but
+        // the test will need refactoring when and if we add move validity checking.
+
+        // Move 3 cards (sequentially) from the top of the draw stack to column 1.  Check that they
+        // stack correctly and that the draw stack continues to display correctly (including
+        // turning over 3 more cards automatically when the stack becomes empty).
+        assertTrue(layout.processMove("D3 1"));
+        List<String> state = layout.print();
+        assertTrue(state.get(2).contains("  D2  "));
+        assertTrue(state.get(3).contains("D3  sJ  **  **  **  **  **"));
+
+        assertTrue(layout.processMove("D2 1"));
+        state = layout.print();
+        assertTrue(state.get(2).contains("  DA  "));
+        assertTrue(state.get(3).contains("D3  sJ  **  **  **  **  **"));
+        assertTrue(state.get(4).contains("D2      s8  **  **  **  **"));
+
+        assertTrue(layout.processMove("DA 1"));
+        state = layout.print();
+        assertTrue(state.get(2).contains("  D6  "));
+        assertTrue(state.get(3).contains("D3  sJ  **  **  **  **  **"));
+        assertTrue(state.get(4).contains("D2      s8  **  **  **  **"));
+        assertTrue(state.get(5).contains("DA          s4  **  **  **"));
+
+        // Move a card from the top of the draw stack to a discard pile.
+        assertTrue(layout.processMove("D6 H"));
+        state = layout.print();
+        assertTrue(state.get(2).contains("sK  **  **  **  **  **  **      D6"));
+
+        // Move 2 cards (sequentially) from a column to a discard pile.
+        assertTrue(layout.processMove("DA D"));
+        state = layout.print();
+        assertTrue(state.get(2).contains("sK  **  **  **  **  **  **   DA D6"));
+        assertFalse(state.get(5).contains("DA"));
+
+        assertTrue(layout.processMove("D2 D"));
+        state = layout.print();
+        assertTrue(state.get(2).contains("sK  **  **  **  **  **  **   D2 D6"));
+
+        // Move all the cards from one column to another, resulting in an empty column.
+        assertTrue(layout.processMove("sK 2"));
+        state = layout.print();
+        assertTrue(state.get(2).contains("   **  **  **  **  **  **   D2 D6"));
+        assertTrue(state.get(4).contains("   sK  s8  **  **  **  **"));
+        assertTrue(state.get(5).contains("   D3      s4  **  **  **"));
+
+        // Move all the face-up cards from one column to another.  Make sure the
+        // last card in the source column gets turned face up.
+        assertTrue(layout.processMove("sJ 3"));
+        state = layout.print();
+        assertTrue(state.get(2).contains("   sQ  **  **  **  **  **"));
+
+        // Move some of the face-up cards from one column to another.
+        assertTrue(layout.processMove("sJ 7"));
+        state = layout.print();
+        assertTrue(state.get(4).contains("s8  **  **  **  **"));
+        assertTrue(state.get(8).contains("HQ"));
+        assertTrue(state.get(9).contains("sJ"));
+        assertTrue(state.get(10).contains("sK"));
+        assertTrue(state.get(11).contains("D3"));
+
+        // Try to move a column of cards to a discard pile.  The move should
+        // come back as unprocessed.
+        assertFalse(layout.processMove("HQ c"));
+
+        // Try to move a card that's not face up.  The move should come back
+        // as unprocessed.
+        assertFalse(layout.processMove("c9 1"));
+    }
+
+
+    /** Given the result of calling print, return the card on the top of the draw stack.
+     */
+    private String getTopDrawStackCard(final List<String> state) {
+        return state.get(2).substring(19,21);
+    }
+
+    /** Start a new game with our mock, unshuffled deck.
+     */
+    private Layout createUnshuffledLayout() throws InvalidFaceValueException, InvalidSuitException, InvalidGameStateException {
+        Deck deck = createUnshufflableDeck();
+        return new Layout(deck);
+    }
+
+    /** Create a mock deck that always has the cards in strictly ascending order and for which
+     * shuffling is a no-op.
+     */
+    private Deck createUnshufflableDeck() throws InvalidFaceValueException, InvalidSuitException {
+        List<Card> cards = new ArrayList<>();
+
+        char[] suits = { 'D', 'H', 'c', 's' };
+        char[] faceValues = { 'A', '2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K' };
+
+        for (char suit : suits) {
+            for (char faceValue : faceValues) {
+                cards.add(new Card(suit, faceValue));
+            }
+        }
+
+        Deck deck = mock(Deck.class);
+        when(deck.getCards()).thenReturn(cards);
+        Mockito.doNothing().when(deck).shuffle();
+
+        return deck;
     }
 
 }
